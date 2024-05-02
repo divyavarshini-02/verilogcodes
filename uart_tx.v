@@ -1,120 +1,116 @@
-module uart_tx ( clk_50, rst_n, tx_uart );
-	   
-	   input clk_50, rst_n;
-	   
-	   output reg tx_uart;
-
-////////////////////////////////BAUD_CLOCK_GENERATOR////////////////////////////////////////////////////////
-
-
-reg [11:0] baud_count;     //baud in binary 1010 0010 1100 for 2604
-reg baud_clock_out;
-
-    always@(posedge clk_50)
-        begin
-			if( rst_n )
-				begin
-					baud_count <= 12'd0;
-					baud_clock_out <= 1'd0;
-				end
-			else
-				begin
-				   if( baud_count == 2604 )
-		    		    begin
-    				        baud_clock_out <= ~baud_clock_out;
-    				        baud_count <= 12'd0;
-    	    		    end
-        			else
-						begin
-							baud_count <= baud_count + 1'b1;		
-						end
-
-				end
-
-        end
+/*-------------------------------------------------------------------------------------------------------------------
+Design Name : UART - Universal Asynchronous Reciever Transmitter
+File name : uart_tx.v
+Designer Name: VK. Divyavarshini & S.Santhosh
+Design Description :
+        1) It's a simple duplex communication protocol.
+        2) The clock is replaces by Baud Rate (No clock)
+        3)  
+-------------------------------------------------------------------------------------------------------------------*/
 
 
 
-///////////////////////////////////////DATA_TO_MEM_TRANSFER/////////////////////////////
+module uart_tx ();
 
-reg [7:0] mem;
-reg [1:0]mem_addr = 2'd0;
+//----------------------------------------- INTERNAL CONSTANTS -----------------------------------------------------//
 
+parameter               DATAWIDTH = 8       ;
+parameter               SIZE = 2            ;
+parameter               COUNT = 8           ;
 
-always@(clk_50)
-	begin
-		case(mem_addr)
-			2'd0: mem <= 8'h80;
-			2'd1: mem <= 8'hC0;
-			2'd2: mem <= 8'hE0;
-			2'd3: mem <= 8'hF0;
-		endcase
+parameter               idle = 2'h00        ,
+                        start = 2'h01       ,
+                        transfer = 2'h10    ,
+                        stop = 2'h11        ;
 
-	end					
+//----------------------------------------- INPUT PORTS ------------------------------------------------------------//
 
+input [DATAWIDTH-1:0]   data_in             ;               //transmitter input
+input                   baud_clk            ;               //baud clock 
+input                   reset_n             ;               //active high reset
 
-///////////////////////////////tx_uart_FSM///////////////////////////////////////////
+//----------------------------------------- OUTPUT PORTS -----------------------------------------------------------//
 
+output                  data_out            ;               //output in transmitter
+output                  tx_signal           ;               //signal of transmitter
 
-reg [1:0] state_tx = 2'd0;
-reg [1:0] bit_index = 2'd0;
-reg [7:0] data = 8'd0;
+//----------------------------------------- INPUT DATA TYPES -------------------------------------------------------//
 
-always@(posedge baud_clock_out)
-	begin
-		if( rst_n )
-			begin
-				data <= 8'd0;
-				mem_addr <= 2'd0;
-				tx_uart <= 1'd0;
-			end
-		else
-			begin
-				case(state_tx)
-					2'd0:
-						begin
-							tx_uart <= 1'd1;
-							state_tx <= 2'd1; 
-						end
-					2'd1:
-						begin
-							tx_uart <= 1'd0;
-							bit_index <= 2'd0;
-							data <= mem;
-							state_tx <= 2'd2; 
-						end
-					2'd2:
-						begin
-							tx_uart <= data[bit_index];
-								if (bit_index == 2'd3)
-									begin
-										bit_index <= 2'd0;
-										state_tx <= 2'd3;
-									end
-								else
-									begin
-										bit_index <= bit_index + 1'b1;
-										state_tx <= 2'd2;
-									end
-						end
-					2'd3:
-						begin
-							tx_uart <= 1'd1;
-								if (mem_addr == 2'd3)
-									begin
-										mem_addr <= 2'd0;
-										state_tx <= 2'd0;
-									end
-								else
-									begin
-										mem_addr <= mem_addr + 1'b1;
-										state_tx <= 2'd1;
-									end
-						end
-					default :
-            			state_tx <= 2'd0;
-				endcase		
-			end
-	end
+wire [DATAWIDTH-1:0]    data_in             ;
+wire                    baud_clk            ;
+wire                    reset_n             ;
 
+//----------------------------------------- OUTPUT DATA TYPES ------------------------------------------------------//
+
+reg                     data_out            ;
+reg                     tx_signal           ;
+
+//----------------------------------------- INTERNAL VARIABLES -----------------------------------------------------//
+
+reg [SIZE-1:0]          p_state             ;
+reg [SIZE-1:0]          n_state             ;
+reg                     srt                 ;                //start signal
+reg                     stp                 ;                //stop signal
+reg [COUNT-1:0]         counter             ;
+
+//----------------------------------------- SEQUENTIAL LOGIC -------------------------------------------------------//
+
+always@( posedge clk ) 
+    begin
+        if(reset_n)
+            begin
+                p_state     <=      3'd0;
+                counter     <=      8'd0;
+                srt         <=      1'd1;
+                stp         <=      1'd0;
+                data_out    <=      1'd1;
+                tx_signal   <=      1'd1;
+            end
+        else                                                                                                       
+            begin
+                p_state <=  n_state;    
+            end
+    end
+
+//----------------------------------------- COMBINATIONAL LOGIC ----------------------------------------------------//
+
+always@( * )
+    begin
+        n_state = 2'h00;
+        case(p_state)
+
+            idle:       begin
+                            srt         =       1'd0;
+                            data_out    =       1'd1;
+                            tx_signal   =       1'd1;
+                            n_state     =       start;
+                        end     
+
+            start:      begin
+                            if(srt = 1'd0)
+                                begin
+                                    n_state     =   transfer;  
+                                end
+                            else 
+                                begin
+                                    n_state     =   idle; 
+                                end
+                            
+                        end 
+
+            transfer:   begin
+                            n_state     =       stop;
+                        end
+                        
+            stop:       begin
+                            n_state     =       .
+                            
+                            
+                            idle;
+                        end 
+    end
+//----------------------------------------- OUTPUT LOGIC -----------------------------------------------------------//
+
+input 
+output
 endmodule
