@@ -1,9 +1,15 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Module Name 		: 	vga.v																											   //
-// Designer Name	: 	Divyavarshini. VK - (GET) RTL & ASIC DESIGN TEAM														           //
-// Description 		:                                                                                                                      //
-//                                                                                                                                         //
-//                                                      VGA-VIDEO GRAPHIC ARRAY                                                            //
+//                                                  *SRAM - SYNCHRONOUS RANDOM ACCESS MEMORY*                                              //
+//                               THE PIN DESCRIPTION OF THE SRAM IN CYCLONE V BOARD ARE AS FOLLOW:                                         //
+//	                                         			 #1 18 BIT ADDRESSS INPUTS (A) 																			 //
+//                                                 #2 16 BIT INOUT DATA (I/O)																					 //
+//                                                 #3 CE CHIP ENABLE (I/P)		 																				 //
+//                                                 #4 OE OUTPUT ENABLE (I/P)                                                               //
+//                                                 #5 WE WRITE ENABLE (I/P)                                                                //
+//                                                 #6 LB LOWER-BYTE CONTROL (0-7 I/O)                                                      //
+//                                                 #7 UB UPPER-BYTE CONTROL (8-15 I/O)                                                     //
+// ----------------------------------------------------------------------------------------------------------------------------------------//
+//                                                      *VGA-VIDEO GRAPHIC ARRAY*                                                          //
 //                              *THINGS TO REMEMBER FOR DESIGNING VGA IN UART SPEC WHICH DE0 BOARD*                                        //
 //                     1# THE DE0 BOARD WORKS IN 25 MHZ.                                                                                   //
 //                     2# THE REFRESH RATE OR THE DATA WITH WHICH THE DISPLAY DEPENDS IS 60Hz, WHICH MEANS 60 FRAMES PER SECOND.           //
@@ -12,197 +18,298 @@
 //                     5# THE TOTAL NUMBER OF PIXELS IS 800 X 525 = 420000 PIXELS.                                                         //
 //                     6# IF WE TAKE ONE PIXEL PER CLOCK CYCLE, THEN IT WOULD TAKE 420000/25000000 = 0.0168 SECONDS (i.e) 16.8ms           //
 //                                                                                                                                         //
+// ----------------------------------------------------------------------------------------------------------------------------------------//
 //                                                                                                                                         //
-//                                                                                                                                         //
-//                     THE HORIZONTAL TIMING SPECIFICATION WORKS WITH FOLLOWING μs AS:                                                     //
-//                                            #1 HSYNC - VGA CLK X HSYNC IN μs - 25MHz X 3.8μS = 95 (TAKEN 96)                             //
-//                                            #2 BACKPORCH - VGA CLK X BACKPORCH IN μs - 25MHz X 1.9μS = 47.5 (48 Approx)                  //
-//                                            #3 DISPLAY INTERVAL - VGA CLK X DISPLAY INTERVAL IN μs - 25MHz X 25.4μS = 635 (640 Approx)   //
-//                                            #4 FRONTPORCH - VGA CLK X FRONTPORCH IN μs - 25MHz X 0.6μS = 15 (TAKEN 16)                   //
+//                     THE HORIZONTAL TIMING SPECIFICATION WORKS WITH FOLLOWING Î¼s AS:                                                    //
+//                                            #1 HSYNC - VGA CLK X HSYNC IN Î¼s - 25MHz X 3.8Î¼S = 95 (TAKEN 96)                           //
+//                                            #2 BACKPORCH - VGA CLK X BACKPORCH IN Î¼s - 25MHz X 1.9Î¼S = 47.5 (48 Approx)                //
+//                                            #3 DISPLAY INTERVAL - VGA CLK X DISPLAY INTERVAL IN Î¼s - 25MHz X 25.4Î¼S = 635 (640 Approx) //
+//                                            #4 FRONTPORCH - VGA CLK X FRONTPORCH IN Î¼s - 25MHz X 0.6Î¼S = 15 (TAKEN 16)                 //
 //                                            #5 SO TOTAL HORIZONTAL PIXELS ARE 96 + 48 + 640 + 16 = 800                                   //
 //                                                                                                                                         //
-//                     THE VERTICAL TIMING SPECIFICATION WORKS WITH FOLLOWING μs AS:                                                       //
-//                                            #1 VSYNC - VGA CLK X VSYNC IN μs - 25MHz X 0.08μS = 2                                        //
-//                                            #2 BACKPORCH - VGA CLK X BACKPORCH IN μs - 25MHz X 1.32μS = 33                               //
-//                                            #3 DISPLAY INTERVAL - VGA CLK X DISPLAY INTERVAL IN μs - 25MHz X 19.2μS = 480                //
-//                                            #4 FRONTPORCH - VGA CLK X FRONTPORCH IN μs - 25MHz X 0.4μS = 10                              //
+//                     THE VERTICAL TIMING SPECIFICATION WORKS WITH FOLLOWING Î¼s AS:                                                      //
+//                                            #1 VSYNC - VGA CLK X VSYNC IN Î¼s - 25MHz X 0.08Î¼S = 2                                      //
+//                                            #2 BACKPORCH - VGA CLK X BACKPORCH IN Î¼s - 25MHz X 1.32Î¼S = 33                             //
+//                                            #3 DISPLAY INTERVAL - VGA CLK X DISPLAY INTERVAL IN Î¼s - 25MHz X 19.2Î¼S = 480              //
+//                                            #4 FRONTPORCH - VGA CLK X FRONTPORCH IN Î¼s - 25MHz X 0.4Î¼S = 10                            //
 //                                            #5 SO TOTAL HORIZONTAL PIXELS ARE 2 + 33 + 480 + 10 = 525                                    //    
 //                                                                                                                                         //
 //                                                                                                                                         // 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////    													                                  
 
-module vga (hsync, vsync, clk_50, rst, red, green, blue);
 
-						parameter overall_column = 12'd800, overall_row = 12'd525; 
+module vga_de2_sram (vga_hsync,
+							vga_vsync, 
+							vga_sync, 
+							vga_blank, 
+							vga_clk, 
+							fpga_clk, 
+							fpga_rst_n, 
+							vga_red,
+							vga_green,
+							vga_blue, 
+							sram_address, 
+							data_in_out, 
+							sram_ce, 
+							sram_oe, 
+							sram_we, 
+							sram_lb, 
+							sram_ub);
 
-						input clk_50, rst;
+						input fpga_clk, fpga_rst_n;
 
-						output reg [29:0]rgb;
+						output reg [9:0]vga_red, vga_green, vga_blue;
 						
-						output hsync, vsync; 
+						output  vga_hsync, vga_vsync;
+						
+						output  vga_sync, vga_blank; 
 
-						output				clk,rst;
+						output reg sram_ce, sram_oe, sram_we, sram_lb, sram_ub;
 				
-						output			ce,oe,we,lb,ub;
-				
-						output	[17:0]			address;
-				
-						inout	[15:0]			data_in;
-				
-						input	[15:0]			data_out;
+						output [17:0] sram_address;
 
- ///////////////////////////////////////////////////ASSIGNING THE VALUE FOR HSYNC AND VSYNC//////////////////////////////////////////////////
+						output reg vga_clk = 1'b0;
+				
+						inout	[15:0] data_in_out;
+						
+///////////////////////////////////////////////////ASSIGNING THE VALUE FOR HSYNC AND VSYNC//////////////////////////////////////////////////
 	
-	reg [11:0] hsync_counter = 12'd0;
-	reg [11:0] vsync_counter = 12'd0;
+	reg [11:0] vga_hsync_counter = 12'd0;
+	reg [11:0] vga_vsync_counter = 12'd0;
 
-	assign hsync = (hsync_counter<=95)? 1'd0: 1'd1;
-	assign vsync = (vsync_counter<=1)? 1'd0: 1'd1;
+	assign vga_hsync = (vga_hsync_counter<12'd799 && vga_hsync_counter>12'd93)? 1'd1: 1'd0;
+	assign vga_vsync = (vga_vsync_counter<12'd524 && vga_vsync_counter>12'd1)? 1'd1: 1'd0;
+				
+ /////////////////////////////////////////////////////CHANGING THE MAIN CLOCK TO 25 Mhz///////////////////////////////////////////////////////////
 
- /////////////////////////////////////////////////////CHANGING THE CLOCK TO 25 Mhz///////////////////////////////////////////////////////////
-
-	reg clk_out_25 = 1'd0;
-
-	always@(posedge clk_50)
+	always@(posedge fpga_clk)
 		begin
-			if(rst)
+			if(fpga_rst_n)
 				begin
-					clk_out_25 <= 1'd0;
+					vga_clk <= 1'd0;
 				end
 			else
 				begin
-					clk_out_25 <= ~clk_out_25;
+					vga_clk <= ~vga_clk;
 				end
 		end
 
-/////////////////////////////////////////////////CHANGING THE CLOCK TO 12/5/////////////////////////////////////////////////////////////////
-	reg clk_out_12 = 1'd0;
+ //////////////////////////////////////////////////////CHANGING THE VGA CLOCK TO 12.5 Mhz////////////////////////////////////////////////////////
 
-	always@(posedge clk_out_12)
+	reg vga_clk_2 = 1'd0;
+
+	always@(posedge vga_clk)
 		begin
-			if(rst)
+			if(fpga_rst_n)
 				begin
-					clk_out_12 <= 1'd0;
+					vga_clk_2 <= 1'd0;
 				end
 			else
 				begin
-					clk_out_12 <= ~clk_out_12;
+					vga_clk_2 <= ~vga_clk_2;
 				end
 		end
  ////////////////////////////////////////////////////HSYNC AND VSYNC COUNTER/////////////////////////////////////////////////////////////////
 
- always@(posedge clk_out_25)
+ always@(posedge vga_clk)
 	begin
-		if(rst)
+		if(fpga_rst_n)
 			begin
-				hsync_counter <= 12'd0;
-				vsync_counter <= 12'd0;
+				vga_hsync_counter <= 12'd0;
+				vga_vsync_counter <= 12'd0;
 			end
 		else
 			begin
-					if (hsync_counter == 12'd800)
+					if (vga_hsync_counter == 12'd799)
 						begin
-							hsync_counter <= 12'd0;
-								if(vsync_counter == 12'd525)
+							vga_hsync_counter <= 12'd0;
+								if(vga_vsync_counter == 12'd524)
 									begin
-										vsync_counter <= 12'd0;
+										vga_vsync_counter <= 12'd0;
 									end
 								else
 									begin
-										vsync_counter <= vsync_counter + 1'b1;
+										vga_vsync_counter <= vga_vsync_counter + 1'b1;
 									end
 						end
 					else
 						begin
-							hsync_counter <= hsync_counter + 1'b1;
+							vga_hsync_counter <= vga_hsync_counter + 1'b1;
 						end
 			end
 	end
 
- /////////////////////////////////////////////////////////RGB DISPLAY/////////////////////////////////////////////////////////////////////
-	//reg addr_en=1'b0; 
-  always@(posedge clk_out_12)
-		begin
-			if(rst)
-				begin
-					red <= 10'd0;
-					green <= 10'd0;
-					blue <= 10'd0;      
-				end 
-			else
-				begin
-					if((hsync_counter>=12'd144 && hsync_counter<=12'd784) || (vsync_counter>=12'd35 && vsync_counter<=12'd515)) //grey
-							begin
-									if(!ce && !oe && we)
-										begin
-											rgb= {2'b00,datain[7:0]};
-											rgb= {2'b00,datain[15:8]};
-											address=address+1;
-											
-										end
-									else
-										begin
-											address <= address;
-										end
-							end
-					else
-						begin
-							red <= 10'd0;
-							green <= 10'd0;
-							blue <= 10'd0;  							
-						end
-				end
-		end
 
-endmodule
-////////////////////////////////////////////////////////////////SRAM CODE///////////////////////////////////////////////////////////////////////////////////////
+ ///////////////////////////////////////////////////// ASSIGNING VALUE FOR CONSTANT ///////////////////////////////////////////////////////////////
+		
+		reg [17:0] sram_address_reg;
+		
+		assign vga_blank = vga_hsync & vga_vsync;
 
-module sram(clk,rst,ce,oe,we,lb,ub,address,data_in,data_out);
-				input				clk,rst;
-				input				ce,oe,we,lb,ub;
-				input	[17:0]			address;
-				inout	[15:0]			data_in;
-				output	[15:0]			data_out;
+		assign vga_sync = 1'b0;
 
-//				reg[15:0]ram[255:0]
- ////////////////////////////////////////////////////////////WRITE IN SRAM///////////////////////////////////////////////////////////////////////////////////
+		//assign sram_ce = 1'b0, sram_oe = 1'b0,  sram_lb = 1'b0, sram_ub = 1'b0, sram_we = 1'b1;
 		
-		
-		// always@(posedge clk)
-		// 	begin
-		// 		if(rst)
-		// 			begin
-		// 				data<=16'd0;	
-		// 			end
-		// 		else if(!ce && !oe && !we && lb && ub)
-		// 		begin
-		// 			sram[address]<=data_in;
-		// 			address<=address+1;
-		// 		end
-		// 		else
-		// 			begin
-		// 				address <= address;
-		// 			end
-		// end
+		assign sram_address = sram_address_reg;
 
- ////////////////////////////////////////////////////////SRAM IN READ////////////////////////////////////////////////////////////////////////////////////
-		
-		
-		always@(posedge clk)
+ //////////////////////////////////////////////////////// GRAYSCALE DISPLAY ///////////////////////////////////////////////////////////////////////
+
+	reg count = 1'd0;
+	reg addr_en;
+	reg [1:0] state = 2'd0;
+	
+		always@(posedge vga_clk)
 			begin
-				if(rst)
+				if(fpga_rst_n)
 					begin
-						data<=16'd0;	
-					end
-				else if(!ce && !oe)
-					begin
-						data_out<=sram[address]
-						address<=address+1;
+						vga_red <= 10'd0;
+						vga_green <= 10'd0;
+						vga_blue <= 10'd0;
+						state <= 2'd0;
 					end
 				else
 					begin
-						address <= address;
+						case(state)
+							2'd0: begin
+										if(vga_vsync_counter > 12'd33 && vga_vsync_counter < 12'd514)
+										begin
+												if(vga_hsync_counter > 12'd140 && vga_hsync_counter < 12'd783) // vsync signal
+												begin	
+													addr_en <= 1'd1;
+													state <= 2'd1;
+												end
+												else
+												begin
+													vga_red <= 10'd0;
+													vga_green <= 10'd0;
+													vga_blue <= 10'd0;
+													state <= 2'd0;
+												end
+										end		
+										else
+										begin
+												addr_en<=1'b0;
+												state<=2'd0;
+										end	
+									end
+							2'd1: begin // 2 slots of data from sram write memory
+////											if(sram_we == 1'd1)
+////												begin
+////													if(sram_address_reg <= 18'd153599)
+////														begin
+															if(vga_vsync_counter > 12'd33 && vga_vsync_counter < 12'd514)
+																begin
+																	if(vga_hsync_counter > 12'd144 && vga_hsync_counter < 12'd783)
+																		begin
+																			case(count)
+																				1'd0:
+																					begin
+																						vga_red <= {data_in_out[7:0],2'b00};
+																						vga_green <={data_in_out[7:0],2'b00};
+																						vga_blue <={data_in_out[7:0],2'b00};
+																						count <= 1'd1;
+																					end
+																				1'd1:
+																					begin
+																						vga_red <= {data_in_out[15:8],2'b00};
+																						vga_green <={data_in_out[15:8],2'b00};
+																						vga_blue <={data_in_out[15:8],2'b00};
+																						count <= 1'd0;
+																					end
+																				default : count <= 1'd0; 
+																			endcase
+																			state <= 2'd1;
+																		end
+																	else
+																		begin
+																			vga_red <= 10'd0;
+																			vga_green <= 10'd0;
+																			vga_blue <= 10'd0;
+																			state <= 2'd0;
+																		end
+																end
+															else
+																begin
+																	vga_red <= 10'd0;
+																	vga_green <= 10'd0;
+																	vga_blue <= 10'd0;
+																	state <= 2'd0;
+																end
+													//	end
+//													else													
+//														begin
+//															state <= 2'd0;
+//														end
+//												end
+//											else
+//												begin
+//													vga_red <= 10'd0;
+//													vga_green <= 10'd0;
+//													vga_blue <= 10'd0;
+//													state <= 2'd0;
+//												end
+										end
+							default : state <= 2'd0;
+						endcase
 					end
 			end
 
-endmodule
+////////////////////////////////////////////////////////////////////	 SRAM ADDRESS 12.5 ///////////////////////////////////////////////////////
+	
+	reg state_address;
+	parameter no_operation = 1'b0, read_operation = 1'b1;
+	 
+	 always@(posedge vga_clk_2)
+              begin
+                    if(fpga_rst_n)
+                        begin
+                            sram_address_reg <= 1'b0;
+                        end
+                    else
+                        begin
+									case(state_address)
+										no_operation: begin
+													if(addr_en == 1'd0)
+														begin
+															sram_ce <= 1'b1;
+															sram_oe <= 1'b1;
+															sram_lb <= 1'b1;
+															sram_ub <= 1'b1;
+															sram_we <= 1'b0;
+															sram_address_reg <= 18'b0;
+															state_address<=no_operation;
+														end
+													else
+														begin
+															state_address <= read_operation;
+														end
+												end
+										read_operation: begin
+											if(addr_en==1'b1)
+											begin
+													sram_ce <= 1'b0;
+													sram_oe <= 1'b0;
+													sram_lb <= 1'b0;
+													sram_ub <= 1'b0;
+													sram_we <= 1'b1;
+														if(sram_address_reg <= 18'd153599)//||(vga_blank))
+															begin
+																sram_address_reg <= sram_address_reg + 18'd1;
+															end
+														else
+															begin
+																sram_address_reg <= 18'd0;
+															end
+															state_address<=read_operation;
+												end
+												else
+												begin
+													state_address<=no_operation;
+												end	
+													
+												end
+										default : state_address <= no_operation;
+									endcase
+                      end
+             end
+endmodule 

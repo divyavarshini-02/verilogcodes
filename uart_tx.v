@@ -1,116 +1,113 @@
-/*-------------------------------------------------------------------------------------------------------------------
-Design Name : UART - Universal Asynchronous Reciever Transmitter
-File name : uart_tx.v
-Designer Name: VK. Divyavarshini & S.Santhosh
-Design Description :
-        1) It's a simple duplex communication protocol.
-        2) The clock is replaces by Baud Rate (No clock)
-        3)  
--------------------------------------------------------------------------------------------------------------------*/
+module uart_tx
+    (
+        input clk,
+        input reset,
+        // input [7:0] data_in,
+
+        output reg tx_out
+    );
+
+    reg [3:0] count;
+    reg [1:0] state;
+    reg [7:0] tx_hold_reg;
+    reg [7:0] tx_shift_reg;
+
+    wire baud_clk;
+    wire ready;
+
+    assign ready = ( count == 4'd9 ) ? 1'd1 : 1'd0;
+
+    always @( posedge baud_clk or negedge reset )
+        begin
+
+            if( reset == 1'd0 )
+                begin
+
+                    tx_out <= 1'd1;
+                    count <= 4'd9;
+                    state <= 2'd0;
+                    tx_hold_reg <= 8'd0;
+                    tx_shift_reg <= 8'd0;
+
+                end
+
+            else
+                begin
 
 
+                    tx_hold_reg = 8'd0;
 
-module uart_tx ();
+                    case( state )
 
-//----------------------------------------- INTERNAL CONSTANTS -----------------------------------------------------//
+                        2'd0:
+                            begin
 
-parameter               DATAWIDTH = 8       ;
-parameter               SIZE = 2            ;
-parameter               COUNT = 8           ;
+                                if( ready && tx_hold_reg >= 8'd0 && tx_hold_reg <= 8'd255 )
+                                    begin
 
-parameter               idle = 2'h00        ,
-                        start = 2'h01       ,
-                        transfer = 2'h10    ,
-                        stop = 2'h11        ;
+                                        tx_shift_reg <= tx_hold_reg;
+                                        state <= 2'd1;
 
-//----------------------------------------- INPUT PORTS ------------------------------------------------------------//
+                                    end
 
-input [DATAWIDTH-1:0]   data_in             ;               //transmitter input
-input                   baud_clk            ;               //baud clock 
-input                   reset_n             ;               //active high reset
+                                else
+                                    begin
 
-//----------------------------------------- OUTPUT PORTS -----------------------------------------------------------//
+                                        tx_out <= 1'd1;
+                                        state <= 2'd0;
 
-output                  data_out            ;               //output in transmitter
-output                  tx_signal           ;               //signal of transmitter
+                                    end
 
-//----------------------------------------- INPUT DATA TYPES -------------------------------------------------------//
+                            end
 
-wire [DATAWIDTH-1:0]    data_in             ;
-wire                    baud_clk            ;
-wire                    reset_n             ;
+                        2'd1:
+                            begin
 
-//----------------------------------------- OUTPUT DATA TYPES ------------------------------------------------------//
+                                if( count == 4'd9 )
+                                    begin
 
-reg                     data_out            ;
-reg                     tx_signal           ;
+                                        tx_out <= 1'd0;    // start bit
+                                        count <= count - 4'd1;
+                                        state <= 2'd1;
 
-//----------------------------------------- INTERNAL VARIABLES -----------------------------------------------------//
+                                    end
+                                
+                                
+                                else if( count < 4'd9 && count > 4'd0)
+                                    begin
 
-reg [SIZE-1:0]          p_state             ;
-reg [SIZE-1:0]          n_state             ;
-reg                     srt                 ;                //start signal
-reg                     stp                 ;                //stop signal
-reg [COUNT-1:0]         counter             ;
+                                        tx_out <= tx_shift_reg[0];
+                                        tx_shift_reg <= tx_shift_reg >> 1;
+                                        count <= count - 4'd1;
+                                        state <= 2'd1;
 
-//----------------------------------------- SEQUENTIAL LOGIC -------------------------------------------------------//
+                                    end
+                                else
+                                    begin
 
-always@( posedge clk ) 
-    begin
-        if(reset_n)
-            begin
-                p_state     <=      3'd0;
-                counter     <=      8'd0;
-                srt         <=      1'd1;
-                stp         <=      1'd0;
-                data_out    <=      1'd1;
-                tx_signal   <=      1'd1;
-            end
-        else                                                                                                       
-            begin
-                p_state <=  n_state;    
-            end
-    end
+                                        tx_out <= 1'd1;    // stop bit
+                                        count <= 4'd9;
+                                        state <= 2'd0;
 
-//----------------------------------------- COMBINATIONAL LOGIC ----------------------------------------------------//
+                                    end
 
-always@( * )
-    begin
-        n_state = 2'h00;
-        case(p_state)
+                            end
 
-            idle:       begin
-                            srt         =       1'd0;
-                            data_out    =       1'd1;
-                            tx_signal   =       1'd1;
-                            n_state     =       start;
-                        end     
+                        default:
+                            state <= 2'd0;
 
-            start:      begin
-                            if(srt = 1'd0)
-                                begin
-                                    n_state     =   transfer;  
-                                end
-                            else 
-                                begin
-                                    n_state     =   idle; 
-                                end
-                            
-                        end 
+                    endcase
 
-            transfer:   begin
-                            n_state     =       stop;
-                        end
-                        
-            stop:       begin
-                            n_state     =       .
-                            
-                            
-                            idle;
-                        end 
-    end
-//----------------------------------------- OUTPUT LOGIC -----------------------------------------------------------//
+                end
 
-input 
-output
+        end
+
+    baud_generator baud
+        (
+            .clk( clk ),
+            .reset( reset ),
+            .baud_clk( baud_clk )
+        );
+
+
 endmodule

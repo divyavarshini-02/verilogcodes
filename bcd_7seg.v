@@ -1,36 +1,21 @@
-module bcd_7segment (out,in,en);
-input [3:0] in;
-input en;
-output reg [6:0] out;
-always @ (in,en) 
+module bcd_7seg(input [4:0] in,
+                output reg[6:0]out
+					 );
+always @(in)
 begin
-  if (en)
-    out = 7'b 0000000;
-  else if (in == 4'b0000)
-    out = 7'b 1111110;
-  else if (in == 4'b0001)
-    out = 7'b 0110000;
-  else if (in == 4'b0010)
-    out = 7'b 1101101;
-  else if (in == 4'b0011)
-    out = 7'b 1111001;
-  else if (in == 4'b0100)
-    out = 7'b 0110011;
-  else if (in == 4'b0101)
-    out = 7'b 1011011;
-  else if (in == 4'b0110)
-    out = 7'b 1011111;
-  else if (in == 4'b0111)
-    out = 7'b 1110000;
-  else if (in == 4'b1000)
-    out = 7'b 1111111;
-  else if (in == 4'b1001)
-    out = 7'b 1110011;
-  else
-    out = 7'bx;
-end
-endmodule    
-  
-  
-  
-  
+case (in)
+                          4'd0:out<=7'b0000001;
+                          4'd1:out<=7'b1001111;
+                          4'd2:out<=7'b0010010;
+                          4'd3:out<=7'b0000110;
+                          4'd4:out<=7'b1001100;
+                          4'd5:out<=7'b0100100;
+                          4'd6:out<=7'b0100000;
+                          4'd7:out<=7'b0001111;
+                          4'd8:out<=7'b0000000;
+                          4'd9:out<=7'b0000100;
+                    
+                          default: out <= 7'b1111111;
+								  endcase
+								  end
+								  endmodule

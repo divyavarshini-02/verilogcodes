@@ -1,417 +1,436 @@
-/**
- * simple controller for ISSI IS42S16160G-7 SDRAM found in De0 Nano
- *  16Mbit x 16 data bit bus (32 megabytes)
- *  Default options
- *    133Mhz
- *    CAS 3
- *
- *  Very simple host interface
- *     * No burst support
- *     * haddr - address for reading and wriging 16 bits of data
- *     * data_input - data for writing, latched in when wr_enable is highz0
- *     * data_output - data for reading, comes available sometime
- *       *few clocks* after rd_enable and address is presented on bus
- *     * rst_n - start init ram process
- *     * rd_enable - read enable, on clk posedge haddr will be latched in,
- *       after *few clocks* data will be available on the data_output port
- *     * wr_enable - write enable, on clk posedge haddr and data_input will
- *       be latched in, after *few clocks* data will be written to sdram
- *
- * Theory
- *  This simple host interface has a busy signal to tell you when you are
- *  not able to issue commands.
- */
+/*
+    This SDRAM controller is for the Mojo's SDRAM shield which uses
+    a 48LC32M8A2-7E SDRAM chip. This module was designed under the
+    assumption that the click rate is 100MHz. Timing values would
+    need to be re-evaluated under different clock rates.
 
-module sdram_controller (
-    /* HOST INTERFACE */
-    wr_addr,
-    wr_data,
-    wr_enable,
+    This controller features two baisc improvements over the most
+    basic of controllers. It does burst reads and writes of 4 bytes,
+    and it only closes a row when it has to.
+*/
 
-    rd_addr,
-    rd_data,
-    rd_ready,
-    rd_enable,
+module sdram (
+        input clk,
+        input rst,
 
-    busy, rst_n, clk,
+        // these signals go directly to the IO pins
+        output sdram_clk,
+        output sdram_cle,
+        output sdram_cs,
+        output sdram_cas,
+        output sdram_ras,
+        output sdram_we,
+        output sdram_dqm,
+        output [1:0] sdram_ba,
+        output [12:0] sdram_a,
+        inout [7:0] sdram_dq,
 
-    /* SDRAM SIDE */
-    addr, bank_addr, data, clock_enable, cs_n, ras_n, cas_n, we_n,
-    data_mask_low, data_mask_high
-);
+        // User interface
+        input [22:0] addr,      // address to read/write
+        input rw,               // 1 = write, 0 = read
+        input [31:0] data_in,   // data from a read
+        output [31:0] data_out, // data for a write
+        output busy,            // controller is busy when high
+        input in_valid,         // pulse high to initiate a read/write
+        output out_valid        // pulses high when data from read is valid
+    );
 
-/* Internal Parameters */
-parameter ROW_WIDTH = 13;
-parameter COL_WIDTH = 9;
-parameter BANK_WIDTH = 2;
+    // Commands for the SDRAM
+    localparam CMD_UNSELECTED    = 4'b1000;
+    localparam CMD_NOP           = 4'b0111;
+    localparam CMD_ACTIVE        = 4'b0011;
+    localparam CMD_READ          = 4'b0101;
+    localparam CMD_WRITE         = 4'b0100;
+    localparam CMD_TERMINATE     = 4'b0110;
+    localparam CMD_PRECHARGE     = 4'b0010;
+    localparam CMD_REFRESH       = 4'b0001;
+    localparam CMD_LOAD_MODE_REG = 4'b0000;
 
-parameter SDRADDR_WIDTH = ROW_WIDTH > COL_WIDTH ? ROW_WIDTH : COL_WIDTH;
-parameter HADDR_WIDTH = BANK_WIDTH + ROW_WIDTH + COL_WIDTH;
+    localparam STATE_SIZE = 4;
+    localparam INIT = 0,
+               WAIT = 1,
+               PRECHARGE_INIT = 2,
+               REFRESH_INIT_1 = 3,
+               REFRESH_INIT_2 = 4,
+               LOAD_MODE_REG = 5,
+               IDLE = 6,
+               REFRESH = 7,
+               ACTIVATE = 8,
+               READ = 9,
+               READ_RES = 10,
+               WRITE = 11,
+               PRECHARGE = 12;
 
-parameter CLK_FREQUENCY = 133;  // Mhz
-parameter REFRESH_TIME =  32;   // ms     (how often we need to refresh)
-parameter REFRESH_COUNT = 8192; // cycles (how many refreshes required per refresh time)
+    wire sdram_clk_ddr;
 
-// clk / refresh =  clk / sec
-//                , sec / refbatch
-//                , ref / refbatch
-localparam CYCLES_BETWEEN_REFRESH = ( CLK_FREQUENCY
-                                      * 1_000
-                                      * REFRESH_TIME
-                                    ) / REFRESH_COUNT;
+    // This is used to drive the SDRAM clock
+    ODDR2 #(
+        .DDR_ALIGNMENT("NONE"),
+        .INIT(1'b0),
+        .SRTYPE("SYNC")
+    ) ODDR2_inst (
+        .Q(sdram_clk_ddr), // 1-bit DDR output data
+        .C0(clk), // 1-bit clock input
+        .C1(~clk), // 1-bit clock input
+        .CE(1'b1), // 1-bit clock enable input
+        .D0(1'b0), // 1-bit data input (associated with C0)
+        .D1(1'b1), // 1-bit data input (associated with C1)
+        .R(1'b0), // 1-bit reset input
+        .S(1'b0) // 1-bit set input
+    );
 
-// STATES - State
-localparam IDLE      = 5'b00000;
+    IODELAY2 #(
+        .IDELAY_VALUE(0),
+        .IDELAY_MODE("NORMAL"),
+        .ODELAY_VALUE(100), // value of 100 seems to work at 100MHz
+        .IDELAY_TYPE("FIXED"),
+        .DELAY_SRC("ODATAIN"),
+        .DATA_RATE("SDR")
+    ) IODELAY_inst (
+        .IDATAIN(1'b0),
+        .T(1'b0),
+        .ODATAIN(sdram_clk_ddr),
+        .CAL(1'b0),
+        .IOCLK0(1'b0),
+        .IOCLK1(1'b0),
+        .CLK(1'b0),
+        .INC(1'b0),
+        .CE(1'b0),
+        .RST(1'b0),
+        .BUSY(),
+        .DATAOUT(),
+        .DATAOUT2(),
+        .TOUT(),
+        .DOUT(sdram_clk)
+    );
 
-localparam INIT_NOP1 = 5'b01000,
-           INIT_PRE1 = 5'b01001,
-           INIT_NOP1_1=5'b00101,
-           INIT_REF1 = 5'b01010,
-           INIT_NOP2 = 5'b01011,
-           INIT_REF2 = 5'b01100,
-           INIT_NOP3 = 5'b01101,
-           INIT_LOAD = 5'b01110,
-           INIT_NOP4 = 5'b01111;
+    // registers for SDRAM signals
+    reg cle_d, dqm_d;
+    reg [3:0] cmd_d;
+    reg [1:0] ba_d;
+    reg [12:0] a_d;
+    reg [7:0] dq_d;
+    reg [7:0] dqi_d;
 
-localparam REF_PRE  =  5'b00001,
-           REF_NOP1 =  5'b00010,
-           REF_REF  =  5'b00011,
-           REF_NOP2 =  5'b00100;
+    // We want the output/input registers to be embedded in the
+    // IO buffers so we set IOB to "TRUE". This is to ensure all
+    // the signals are sent and received at the same time.
+    (* IOB = "TRUE" *)
+    reg cle_q, dqm_q;
+    (* IOB = "TRUE" *)
+    reg [3:0] cmd_q;
+    (* IOB = "TRUE" *)
+    reg [1:0] ba_q;
+    (* IOB = "TRUE" *)
+    reg [12:0] a_q;
+    (* IOB = "TRUE" *)
+    reg [7:0] dq_q;
+    (* IOB = "TRUE" *)
+    reg [7:0] dqi_q;
+    reg dq_en_d, dq_en_q;
 
-localparam READ_ACT  = 5'b10000,
-           READ_NOP1 = 5'b10001,
-           READ_CAS  = 5'b10010,
-           READ_NOP2 = 5'b10011,
-           READ_READ = 5'b10100;
+    // Output assignments
+    assign sdram_cle = cle_q;
+    assign sdram_cs = cmd_q[3];
+    assign sdram_ras = cmd_q[2];
+    assign sdram_cas = cmd_q[1];
+    assign sdram_we = cmd_q[0];
+    assign sdram_dqm = dqm_q;
+    assign sdram_ba = ba_q;
+    assign sdram_a = a_q;
+    assign sdram_dq = dq_en_q ? dq_q : 8'hZZ; // only drive when dq_en_q is 1
 
-localparam WRIT_ACT  = 5'b11000,
-           WRIT_NOP1 = 5'b11001,
-           WRIT_CAS  = 5'b11010,
-           WRIT_NOP2 = 5'b11011;
+    reg [STATE_SIZE-1:0] state_d, state_q = INIT;
+    reg [STATE_SIZE-1:0] next_state_d, next_state_q;
 
-// Commands              CCRCWBBA
-//                       ESSSE100
-localparam CMD_PALL = 8'b10010001,
-           CMD_REF  = 8'b10001000,
-           CMD_NOP  = 8'b10111000,
-           CMD_MRS  = 8'b1000000x,
-           CMD_BACT = 8'b10011xxx,
-           CMD_READ = 8'b10101xx1,
-           CMD_WRIT = 8'b10100xx1;
+    reg [22:0] addr_d, addr_q;
+    reg [31:0] data_d, data_q;
+    reg out_valid_d, out_valid_q;
 
-/* Interface Definition */
-/* HOST INTERFACE */
-input  [HADDR_WIDTH-1:0]   wr_addr;
-input  [15:0]              wr_data;
-input                      wr_enable;
+    assign data_out = data_q;
+    assign busy = !ready_q;
+    assign out_valid = out_valid_q;
 
-input  [HADDR_WIDTH-1:0]   rd_addr;
-output [15:0]              rd_data;
-input                      rd_enable;
-output                     rd_ready;
+    reg [15:0] delay_ctr_d, delay_ctr_q;
+    reg [1:0] byte_ctr_d, byte_ctr_q;
 
-output                     busy;
-input                      rst_n;
-input                      clk;
+    reg [9:0] refresh_ctr_d, refresh_ctr_q;
+    reg refresh_flag_d, refresh_flag_q;
 
-/* SDRAM SIDE */
-output [SDRADDR_WIDTH-1:0] addr;
-output [BANK_WIDTH-1:0]    bank_addr;
-inout  [15:0]              data;
-output                     clock_enable;
-output                     cs_n;
-output                     ras_n;
-output                     cas_n;
-output                     we_n;
-output                     data_mask_low;
-output                     data_mask_high;
+    reg ready_d, ready_q;
+    reg saved_rw_d, saved_rw_q;
+    reg [22:0] saved_addr_d, saved_addr_q;
+    reg [31:0] saved_data_d, saved_data_q;
 
-/* I/O Registers */
+    reg rw_op_d, rw_op_q;
 
-reg  [HADDR_WIDTH-1:0]   haddr_r;
-reg  [15:0]              wr_data_r;
-reg  [15:0]              rd_data_r;
-reg                      busy;
-reg                      data_mask_low_r;
-reg                      data_mask_high_r;
-reg [SDRADDR_WIDTH-1:0]  addr_r;
-reg [BANK_WIDTH-1:0]     bank_addr_r;
-reg                      rd_ready_r;
+    reg [3:0] row_open_d, row_open_q;
+    reg [12:0] row_addr_d[3:0], row_addr_q[3:0];
 
-wire [15:0]              data_output;
-wire                     data_mask_low, data_mask_high;
+    reg [2:0] precharge_bank_d, precharge_bank_q;
+    integer i;
 
-assign data_mask_high = data_mask_high_r;
-assign data_mask_low  = data_mask_low_r;
-assign rd_data        = rd_data_r;
+    always @* begin
+        // Default values
+        dq_d = dq_q;
+        dqi_d = sdram_dq;
+        dq_en_d = 1'b0; // normally keep the bus in high-Z
+        cle_d = cle_q;
+        cmd_d = CMD_NOP; // default to NOP
+        dqm_d = 1'b0;
+        ba_d = 2'd0;
+        a_d = 25'd0;
+        state_d = state_q;
+        next_state_d = next_state_q;
+        delay_ctr_d = delay_ctr_q;
+        addr_d = addr_q;
+        data_d = data_q;
+        out_valid_d = 1'b0;
+        precharge_bank_d = precharge_bank_q;
+        rw_op_d = rw_op_q;
+        byte_ctr_d = 2'd0;
 
-/* Internal Wiring */
-reg [3:0] state_cnt;
-reg [9:0] refresh_cnt;
+        row_open_d = row_open_q;
 
-reg [7:0] command;
-reg [4:0] state;
+        // row_addr is a 2d array and must be coppied this way
+        for (i = 0; i < 4; i = i + 1)
+            row_addr_d[i] = row_addr_q[i];
 
-// TODO output addr[6:4] when programming mode register
-
-reg [7:0] command_nxt;
-reg [3:0] state_cnt_nxt;
-reg [4:0] next;
-
-assign {clock_enable, cs_n, ras_n, cas_n, we_n} = command[7:3];
-// state[4] will be set if mode is read/write
-assign bank_addr      = (state[4]) ? bank_addr_r : command[2:1];
-assign addr           = (state[4] | state == INIT_LOAD) ? addr_r : { {SDRADDR_WIDTH-11{1'b0}}, command[0], 10'd0 };
-
-assign data = (state == WRIT_CAS) ? wr_data_r : 16'bz;
-assign rd_ready = rd_ready_r;
-
-// HOST INTERFACE
-// all registered on posedge
-always @ (posedge clk)
-  if (~rst_n)
-    begin
-    state <= INIT_NOP1;
-    command <= CMD_NOP;
-    state_cnt <= 4'hf;
-
-    haddr_r <= {HADDR_WIDTH{1'b0}};
-    wr_data_r <= 16'b0;
-    rd_data_r <= 16'b0;
-    busy <= 1'b0;
-    end
-  else
-    begin
-
-    state <= next;
-    command <= command_nxt;
-
-    if (!state_cnt)
-      state_cnt <= state_cnt_nxt;
-    else
-      state_cnt <= state_cnt - 1'b1;
-
-    if (wr_enable)
-      wr_data_r <= wr_data;
-
-    if (state == READ_READ)
-      begin
-      rd_data_r <= data;
-      rd_ready_r <= 1'b1;
-      end
-    else
-      rd_ready_r <= 1'b0;
-
-    busy <= state[4];
-
-    if (rd_enable)
-      haddr_r <= rd_addr;
-    else if (wr_enable)
-      haddr_r <= wr_addr;
-
-    end
-
-// Handle refresh counter
-always @ (posedge clk)
- if (~rst_n)
-   refresh_cnt <= 10'b0;
- else
-   if (state == REF_NOP2)
-     refresh_cnt <= 10'b0;
-   else
-     refresh_cnt <= refresh_cnt + 1'b1;
-
-
-/* Handle logic for sending addresses to SDRAM based on current state*/
-always @*
-begin
-    if (state[4])
-      {data_mask_low_r, data_mask_high_r} = 2'b00;
-    else
-      {data_mask_low_r, data_mask_high_r} = 2'b11;
-
-   bank_addr_r = 2'b00;
-   addr_r = {SDRADDR_WIDTH{1'b0}};
-
-   if (state == READ_ACT | state == WRIT_ACT)
-     begin
-     bank_addr_r = haddr_r[HADDR_WIDTH-1:HADDR_WIDTH-(BANK_WIDTH)];
-     addr_r = haddr_r[HADDR_WIDTH-(BANK_WIDTH+1):HADDR_WIDTH-(BANK_WIDTH+ROW_WIDTH)];
-     end
-   else if (state == READ_CAS | state == WRIT_CAS)
-     begin
-     // Send Column Address
-     // Set bank to bank to precharge
-     bank_addr_r = haddr_r[HADDR_WIDTH-1:HADDR_WIDTH-(BANK_WIDTH)];
-
-     // Examples for math
-     //               BANK  ROW    COL
-     // HADDR_WIDTH   2 +   13 +   9   = 24
-     // SDRADDR_WIDTH 13
-
-     // Set CAS address to:
-     //   0s,
-     //   1 (A10 is always for auto precharge),
-     //   0s,
-     //   column address
-     addr_r = {
-               {SDRADDR_WIDTH-(11){1'b0}},
-               1'b1,                       /* A10 */
-               {10-COL_WIDTH{1'b0}},
-               haddr_r[COL_WIDTH-1:0]
-              };
-     end
-   else if (state == INIT_LOAD)
-     begin
-     // Program mode register during load cycle
-     //                                       B  C  SB
-     //                                       R  A  EUR
-     //                                       S  S-3Q ST
-     //                                       T  654L210
-     addr_r = {{SDRADDR_WIDTH-10{1'b0}}, 10'b1000110000};
-     end
-end
-
-// Next state logic
-always @*
-begin
-   state_cnt_nxt = 4'd0;
-   command_nxt = CMD_NOP;
-   if (state == IDLE)
-        // Monitor for refresh or hold
-        if (refresh_cnt >= CYCLES_BETWEEN_REFRESH)
-          begin
-          next = REF_PRE;
-          command_nxt = CMD_PALL;
-          end
-        else if (rd_enable)
-          begin
-          next = READ_ACT;
-          command_nxt = CMD_BACT;
-          end
-        else if (wr_enable)
-          begin
-          next = WRIT_ACT;
-          command_nxt = CMD_BACT;
-          end
-        else
-          begin
-          // HOLD
-          next = IDLE;
-          end
-    else
-      if (!state_cnt)
-        case (state)
-          // INIT ENGINE
-          INIT_NOP1:
-            begin
-            next = INIT_PRE1;
-            command_nxt = CMD_PALL;
-            end
-          INIT_PRE1:
-            begin
-            next = INIT_NOP1_1;
-            end
-          INIT_NOP1_1:
-            begin
-            next = INIT_REF1;
-            command_nxt = CMD_REF;
-            end
-          INIT_REF1:
-            begin
-            next = INIT_NOP2;
-            state_cnt_nxt = 4'd7;
-            end
-          INIT_NOP2:
-            begin
-            next = INIT_REF2;
-            command_nxt = CMD_REF;
-            end
-          INIT_REF2:
-            begin
-            next = INIT_NOP3;
-            state_cnt_nxt = 4'd7;
-            end
-          INIT_NOP3:
-            begin
-            next = INIT_LOAD;
-            command_nxt = CMD_MRS;
-            end
-          INIT_LOAD:
-            begin
-            next = INIT_NOP4;
-            state_cnt_nxt = 4'd1;
-            end
-          // INIT_NOP4: default - IDLE
-
-          // REFRESH
-          REF_PRE:
-            begin
-            next = REF_NOP1;
-            end
-          REF_NOP1:
-            begin
-            next = REF_REF;
-            command_nxt = CMD_REF;
-            end
-          REF_REF:
-            begin
-            next = REF_NOP2;
-            state_cnt_nxt = 4'd7;
-            end
-          // REF_NOP2: default - IDLE
-
-          // WRITE
-          WRIT_ACT:
-            begin
-            next = WRIT_NOP1;
-            state_cnt_nxt = 4'd1;
-            end
-          WRIT_NOP1:
-            begin
-            next = WRIT_CAS;
-            command_nxt = CMD_WRIT;
-            end
-          WRIT_CAS:
-            begin
-            next = WRIT_NOP2;
-            state_cnt_nxt = 4'd1;
-            end
-          // WRIT_NOP2: default - IDLE
-
-          // READ
-          READ_ACT:
-            begin
-            next = READ_NOP1;
-            state_cnt_nxt = 4'd1;
-            end
-          READ_NOP1:
-            begin
-            next = READ_CAS;
-            command_nxt = CMD_READ;
-            end
-          READ_CAS:
-            begin
-            next = READ_NOP2;
-            state_cnt_nxt = 4'd1;
-            end
-          READ_NOP2:
-            begin
-            next = READ_READ;
-            end
-          // READ_READ: default - IDLE
-
-          default:
-            begin
-            next = IDLE;
-            end
-          endcase
-      else
-        begin
-        // Counter Not Reached - HOLD
-        next = state;
-        command_nxt = command;
+        // The data in the SDRAM must be refreshed periodically.
+        // This conter ensures that the data remains intact.
+        refresh_flag_d = refresh_flag_q;
+        refresh_ctr_d = refresh_ctr_q + 1'b1;
+        if (refresh_ctr_q > 10'd750) begin
+            refresh_ctr_d = 10'd0;
+            refresh_flag_d = 1'b1;
         end
-end
 
+        saved_rw_d = saved_rw_q;
+        saved_data_d = saved_data_q;
+        saved_addr_d = saved_addr_q;
+        ready_d = ready_q;
+
+        // This is a queue of 1 for read/write operations.
+        // When the queue is empty we aren't busy and can
+        // accept another request.
+        if (ready_q && in_valid) begin
+            saved_rw_d = rw;
+            saved_data_d = data_in;
+            saved_addr_d = addr;
+            ready_d = 1'b0;
+        end
+
+        case (state_q)
+            ///// INITALIZATION /////
+            INIT: begin
+                ready_d = 1'b0;
+                row_open_d = 4'b0;
+                out_valid_d = 1'b0;
+                a_d = 13'b0;
+                ba_d = 2'b0;
+                cle_d = 1'b1;
+                state_d = WAIT;
+                delay_ctr_d = 16'd10100; // wait for 101us
+                next_state_d = PRECHARGE_INIT;
+                dq_en_d = 1'b0;
+            end
+            WAIT: begin
+                delay_ctr_d = delay_ctr_q - 1'b1;
+                if (delay_ctr_q == 13'd0) begin
+                    state_d = next_state_q;
+                    if (next_state_q == WRITE) begin
+                        dq_en_d = 1'b1; // enable the bus early
+                        dq_d = data_q[7:0];
+                    end
+                end
+            end
+            PRECHARGE_INIT: begin
+                cmd_d = CMD_PRECHARGE;
+                a_d[10] = 1'b1; // all banks
+                ba_d = 2'd0;
+                state_d = WAIT;
+                next_state_d = REFRESH_INIT_1;
+                delay_ctr_d = 13'd0;
+            end
+            REFRESH_INIT_1: begin
+                cmd_d = CMD_REFRESH;
+                state_d = WAIT;
+                delay_ctr_d = 13'd7;
+                next_state_d = REFRESH_INIT_2;
+            end
+            REFRESH_INIT_2: begin
+                cmd_d = CMD_REFRESH;
+                state_d = WAIT;
+                delay_ctr_d = 13'd7;
+                next_state_d = LOAD_MODE_REG;
+            end
+            LOAD_MODE_REG: begin
+                cmd_d = CMD_LOAD_MODE_REG;
+                ba_d = 2'b0;
+                // Reserved, Burst Access, Standard Op, CAS = 2, Sequential, Burst = 4
+                a_d = {3'b000, 1'b0, 2'b00, 3'b010, 1'b0, 3'b010}; //010
+                state_d = WAIT;
+                delay_ctr_d = 13'd1;
+                next_state_d = IDLE;
+                refresh_flag_d = 1'b0;
+                refresh_ctr_d = 10'b1;
+                ready_d = 1'b1;
+            end
+
+            ///// IDLE STATE /////
+            IDLE: begin
+                if (refresh_flag_q) begin // we need to do a refresh
+                    state_d = PRECHARGE;
+                    next_state_d = REFRESH;
+                    precharge_bank_d = 3'b100; // all banks
+                    refresh_flag_d = 1'b0; // clear the refresh flag
+                end else if (!ready_q) begin // operation waiting
+                    ready_d = 1'b1; // clear the queue
+                    rw_op_d = saved_rw_q; // save the values we'll need later
+                    addr_d = saved_addr_q;
+
+                    if (saved_rw_q) // Write
+                        data_d = saved_data_q;
+
+                    // if the row is open we don't have to activate it
+                    if (row_open_q[saved_addr_q[9:8]]) begin
+                        if (row_addr_q[saved_addr_q[9:8]] == saved_addr_q[22:10]) begin
+                            // Row is already open
+                            if (saved_rw_q)
+                                state_d = WRITE;
+                            else
+                                state_d = READ;
+                        end else begin
+                            // A different row in the bank is open
+                            state_d = PRECHARGE; // precharge open row
+                            precharge_bank_d = {1'b0, saved_addr_q[9:8]};
+                            next_state_d = ACTIVATE; // open current row
+                        end
+                    end else begin
+                        // no rows open
+                        state_d = ACTIVATE; // open the row
+                    end
+                end
+            end
+
+            ///// REFRESH /////
+            REFRESH: begin
+                cmd_d = CMD_REFRESH;
+                state_d = WAIT;
+                delay_ctr_d = 13'd6; // gotta wait 7 clocks (66ns)
+                next_state_d = IDLE;
+            end
+
+            ///// ACTIVATE /////
+            ACTIVATE: begin
+                cmd_d = CMD_ACTIVE;
+                a_d = addr_q[22:10];
+                ba_d = addr_q[9:8];
+                delay_ctr_d = 13'd0;
+                state_d = WAIT;
+
+                if (rw_op_q)
+                    next_state_d = WRITE;
+                else
+                    next_state_d = READ;
+
+                row_open_d[addr_q[9:8]] = 1'b1; // row is now open
+                row_addr_d[addr_q[9:8]] = addr_q[22:10];
+            end
+
+            ///// READ /////
+            READ: begin
+                cmd_d = CMD_READ;
+                a_d = {2'b0, 1'b0, addr_q[7:0], 2'b0};
+                ba_d = addr_q[9:8];
+                state_d = WAIT;
+                delay_ctr_d = 13'd2; // wait for the data to show up
+                next_state_d = READ_RES;
+
+            end
+            READ_RES: begin
+                byte_ctr_d = byte_ctr_q + 1'b1; // we need to read in 4 bytes
+                data_d = {dqi_q, data_q[31:8]}; // shift the data in
+                if (byte_ctr_q == 2'd3) begin
+                    out_valid_d = 1'b1;
+                    state_d = IDLE;
+                end
+            end
+
+            ///// WRITE /////
+            WRITE: begin
+                byte_ctr_d = byte_ctr_q + 1'b1; // send out 4 bytes
+
+                if (byte_ctr_q == 2'd0) // first byte send write command
+                    cmd_d = CMD_WRITE;
+
+                dq_d = data_q[7:0];
+                data_d = {8'h00, data_q[31:8]}; // shift the data out
+                dq_en_d = 1'b1; // enable out bus
+                a_d = {2'b0, 1'b0, addr_q[7:0], 2'b00};
+                ba_d = addr_q[9:8];
+
+                if (byte_ctr_q == 2'd3) begin
+                    state_d = IDLE;
+                end
+            end
+
+            ///// PRECHARGE /////
+            PRECHARGE: begin
+                cmd_d = CMD_PRECHARGE;
+                a_d[10] = precharge_bank_q[2]; // all banks
+                ba_d = precharge_bank_q[1:0];
+                state_d = WAIT;
+                delay_ctr_d = 13'd0;
+
+                if (precharge_bank_q[2]) begin
+                    row_open_d = 4'b0000; // closed all rows
+                end else begin
+                    row_open_d[precharge_bank_q[1:0]] = 1'b0; // closed one row
+                end
+            end
+
+            default: state_d = INIT;
+        endcase
+
+    end
+
+    always @(posedge clk) begin
+        if(rst) begin
+            cle_q <= 1'b0;
+            dq_en_q <= 1'b0;
+            state_q <= INIT;
+            ready_q <= 1'b0;
+        end else begin
+            cle_q <= cle_d;
+            dq_en_q <= dq_en_d;
+            state_q <= state_d;
+            ready_q <= ready_d;
+        end
+
+        saved_rw_q <= saved_rw_d;
+        saved_data_q <= saved_data_d;
+        saved_addr_q <= saved_addr_d;
+
+        cmd_q <= cmd_d;
+        dqm_q <= dqm_d;
+        ba_q <= ba_d;
+        a_q <= a_d;
+        dq_q <= dq_d;
+        dqi_q <= dqi_d;
+
+        next_state_q <= next_state_d;
+        refresh_flag_q <= refresh_flag_d;
+        refresh_ctr_q <= refresh_ctr_d;
+        data_q <= data_d;
+        addr_q <= addr_d;
+        out_valid_q <= out_valid_d;
+        row_open_q <= row_open_d;
+        for (i = 0; i < 4; i = i + 1)
+            row_addr_q[i] <= row_addr_d[i];
+        precharge_bank_q <= precharge_bank_d;
+        rw_op_q <= rw_op_d;
+        byte_ctr_q <= byte_ctr_d;
+        delay_ctr_q <= delay_ctr_d;
+    end
 endmodule
