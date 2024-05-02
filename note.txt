@@ -1,0 +1,22 @@
+
+auth_fsm4
+check these lines in auth_fsm4 
+if needed change for tri_mux
+line no 822
+line no 1033
+line no 1123
+----------------
+cre_mb_config1
+properly compaire with old one
+cre related instance and wire / pin 
+copy from the this file to existing file.
+else reset and clock get disturb 
+----------------
+jp2_boot
+properly compaire with old one
+cre_mb_config1 and auth_fsm4 related instance and wire / pin 
+copy from the this file to existing file.
+
+
+
+
