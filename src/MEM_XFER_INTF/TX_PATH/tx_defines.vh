@@ -1,0 +1,2 @@
+`define FPGA_OR_SIMULATION
+//`define ASIC_SYNTH
